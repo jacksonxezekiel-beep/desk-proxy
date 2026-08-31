@@ -1,0 +1,11 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "vite build",
+  "outputDirectory": "dist",
+  "framework": "vite",
+  "functions": {
+    "api/quotes.js": { "maxDuration": 15 },
+    "api/news.js": { "maxDuration": 15 },
+    "api/ai.js": { "maxDuration": 60 }
+  }
+}
