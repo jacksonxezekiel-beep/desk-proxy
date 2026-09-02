@@ -58,25 +58,43 @@ export default async function handler(req, res) {
   if (!key) return res.status(500).json({ error: 'FINNHUB_KEY is not set on the server.' });
 
   const region = (req.query.region || 'all').toString();
-  const category = categoryFor(region);
+  // Pull several Finnhub feeds and merge them so far fewer real events are missed:
+  // general market news + M&A/deals for the main feed; the dedicated crypto feed for crypto.
+  const cats = region === 'crypto' ? ['crypto'] : ['general', 'merger'];
+  const cacheKey = cats.join('+');
 
-  const hit = cache.get(category);
+  const hit = cache.get(cacheKey);
   if (hit && hit.exp > Date.now()) {
     res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate=120');
     return res.status(200).json({ items: hit.items, asOf: Date.now(), cached: true });
   }
 
   try {
-    const r = await fetch(`${NEWS}?category=${category}&token=${key}`, { headers: { 'Accept': 'application/json' } });
-    if (!r.ok) throw new Error(`finnhub ${r.status}`);
-    const raw = await r.json();
-    const items = (Array.isArray(raw) ? raw : [])
+    const results = await Promise.all(cats.map((c) =>
+      fetch(`${NEWS}?category=${c}&token=${key}`, { headers: { 'Accept': 'application/json' } })
+        .then((r) => (r.ok ? r.json() : []))
+        .catch(() => [])
+    ));
+    const merged = [].concat(...results.map((x) => (Array.isArray(x) ? x : [])));
+    if (!merged.length) throw new Error('no news');
+
+    // newest first, then drop duplicates by URL and by near-identical headline
+    const seenUrl = new Set(), seenTitle = new Set();
+    const items = merged
       .filter((n) => n && n.headline && n.url)
-      .slice(0, 40)
+      .sort((a, b) => (b.datetime || 0) - (a.datetime || 0))
+      .filter((n) => {
+        const u = String(n.url);
+        const t = String(n.headline).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().slice(0, 80);
+        if (seenUrl.has(u) || seenTitle.has(t)) return false;
+        seenUrl.add(u); seenTitle.add(t); return true;
+      })
+      .slice(0, 90)
       .map((n) => {
         const blob = `${n.headline} ${n.summary || ''}`;
         return {
           time: hhmm(n.datetime),
+          ts: n.datetime || 0,
           impact: tierFor(blob),
           title: String(n.headline).slice(0, 180),
           summary: String(n.summary || '').slice(0, 300),
@@ -85,7 +103,7 @@ export default async function handler(req, res) {
           tag: tagFor(blob),
         };
       });
-    cache.set(category, { items, exp: Date.now() + TTL_MS });
+    cache.set(cacheKey, { items, exp: Date.now() + TTL_MS });
     res.setHeader('Cache-Control', 's-maxage=60, stale-while-revalidate=120');
     return res.status(200).json({ items, asOf: Date.now() });
   } catch (e) {
