@@ -20,19 +20,24 @@ const fmtPct = (v) => v == null ? 'n/a' : (v >= 0 ? '+' : '') + v.toFixed(v <= -
 
 // Daily closes, ascending by date, as [{date:'YYYY-MM-DD', close:Number}].
 async function yahooHistory(symbol) {
-  try {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=6y&interval=1d`;
-    const r = await fetch(url, { headers: { 'User-Agent': UA, 'Accept': 'application/json' } });
-    if (!r.ok) return null;
-    const j = await r.json();
-    const res = j && j.chart && j.chart.result && j.chart.result[0];
-    if (!res || !res.timestamp) return null;
-    const ts = res.timestamp;
-    const closes = (res.indicators && res.indicators.quote && res.indicators.quote[0] && res.indicators.quote[0].close) || [];
-    const rows = ts.map((t, i) => ({ date: new Date(t * 1000).toISOString().slice(0, 10), close: closes[i] }))
-      .filter(x => Number.isFinite(x.close));
-    return rows.length > 5 ? rows : null;
-  } catch (_) { return null; }
+  // Yahoo occasionally rate-limits or blocks one host; try both before giving up.
+  const hosts = ['query1.finance.yahoo.com', 'query2.finance.yahoo.com'];
+  for (const host of hosts) {
+    try {
+      const url = `https://${host}/v8/finance/chart/${encodeURIComponent(symbol)}?range=6y&interval=1d`;
+      const r = await fetch(url, { headers: { 'User-Agent': UA, 'Accept': 'application/json' } });
+      if (!r.ok) continue;
+      const j = await r.json();
+      const res = j && j.chart && j.chart.result && j.chart.result[0];
+      if (!res || !res.timestamp) continue;
+      const ts = res.timestamp;
+      const closes = (res.indicators && res.indicators.quote && res.indicators.quote[0] && res.indicators.quote[0].close) || [];
+      const rows = ts.map((t, i) => ({ date: new Date(t * 1000).toISOString().slice(0, 10), close: closes[i] }))
+        .filter(x => Number.isFinite(x.close));
+      if (rows.length > 5) return rows;
+    } catch (_) { /* try next host */ }
+  }
+  return null;
 }
 async function stooqHistory(symbol) {
   const bases = [symbol.toLowerCase(), symbol.toLowerCase() + '.us'];
